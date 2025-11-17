@@ -20,6 +20,8 @@ scipy>=1.11.4
 
 # Utilities
 python-dotenv==1.0.0
+pandas>=2.0.0
+tqdm>=4.66.0
 
 # Optional (for cloud deployment)
 gunicorn==21.2.0

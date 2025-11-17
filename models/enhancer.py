@@ -93,13 +93,14 @@ class LowLightEnhancer:
         except Exception as e:
             print(f"⚠ Warning: Could not load weights: {e}. Using classical enhancement.")
     
-    def enhance(self, image, preserve_colors=True):
+    def enhance(self, image, preserve_colors=True, max_brightness=220):
         """
         Enhance low-light image
         
         Args:
             image: numpy array (BGR format from OpenCV)
             preserve_colors: If True, uses more conservative enhancement to avoid over-saturation
+            max_brightness: Maximum average brightness value (0-255) to prevent over-enhancement
             
         Returns:
             numpy array: Enhanced image (BGR format)
@@ -108,32 +109,36 @@ class LowLightEnhancer:
         # Check if weights exist - if not, use classical method
         weights_path = Path('weights/enhancer_best.pth')
         if not weights_path.exists():
-            return self._classical_enhancement(image, preserve_colors=preserve_colors)
+            enhanced = self._classical_enhancement(image, preserve_colors=preserve_colors)
+        else:
+            try:
+                # Preprocess
+                original_shape = image.shape[:2]
+                img_resized = cv2.resize(image, (256, 256))
+                img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                
+                # Normalize to [0, 1]
+                img_tensor = torch.from_numpy(img_rgb.astype(np.float32) / 255.0)
+                img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
+                
+                # Enhance
+                with torch.no_grad():
+                    enhanced = self.model(img_tensor)
+                    enhanced = enhanced.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                    enhanced = (enhanced * 255.0).astype(np.uint8)
+                
+                # Convert RGB to BGR and resize back
+                enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
+                enhanced_bgr = cv2.resize(enhanced_bgr, (original_shape[1], original_shape[0]))
+                enhanced = enhanced_bgr
+            except Exception as e:
+                print(f"Error in enhancement: {e}")
+                enhanced = self._classical_enhancement(image, preserve_colors=preserve_colors)
         
-        try:
-            # Preprocess
-            original_shape = image.shape[:2]
-            img_resized = cv2.resize(image, (256, 256))
-            img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-            
-            # Normalize to [0, 1]
-            img_tensor = torch.from_numpy(img_rgb.astype(np.float32) / 255.0)
-            img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
-            
-            # Enhance
-            with torch.no_grad():
-                enhanced = self.model(img_tensor)
-                enhanced = enhanced.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                enhanced = (enhanced * 255.0).astype(np.uint8)
-            
-            # Convert RGB to BGR and resize back
-            enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
-            enhanced_bgr = cv2.resize(enhanced_bgr, (original_shape[1], original_shape[0]))
-            
-            return enhanced_bgr
-        except Exception as e:
-            print(f"Error in enhancement: {e}")
-            return self._classical_enhancement(image, preserve_colors=preserve_colors)
+        # Apply brightness limiting to prevent over-enhancement
+        enhanced = self._limit_brightness(enhanced, max_brightness=max_brightness)
+        
+        return enhanced
     
     def _classical_enhancement(self, image, preserve_colors=True):
         """Fallback: Classical CV enhancement using CLAHE and gamma correction"""
@@ -165,5 +170,37 @@ class LowLightEnhancer:
             enhanced = cv2.cvtColor(cv2.merge([h, s, v]), cv2.COLOR_HSV2BGR)
         
         return enhanced
+    
+    def _limit_brightness(self, image, max_brightness=220):
+        """
+        Limit the overall brightness of an image to prevent over-enhancement
+        
+        Args:
+            image: numpy array (BGR format)
+            max_brightness: Maximum average brightness value (0-255)
+            
+        Returns:
+            numpy array: Brightness-limited image
+        """
+        # Calculate current average brightness in HSV space
+        hsv = cv2.cvtColor(image, cv2.COLOR_BGR2HSV)
+        current_brightness = np.mean(hsv[:,:,2])
+        
+        # If brightness exceeds limit, tone it down
+        if current_brightness > max_brightness:
+            # Calculate scaling factor to bring brightness down to max_brightness
+            # Use a smooth scaling to avoid harsh transitions
+            scale_factor = max_brightness / current_brightness
+            
+            # Apply scaling to V channel (brightness)
+            v = hsv[:,:,2].astype(np.float32)
+            v = v * scale_factor
+            v = np.clip(v, 0, 255).astype(np.uint8)
+            
+            # Reconstruct HSV and convert back to BGR
+            hsv[:,:,2] = v
+            image = cv2.cvtColor(hsv, cv2.COLOR_HSV2BGR)
+        
+        return image
 
 

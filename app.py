@@ -20,6 +20,7 @@ from PIL import Image
 from models.blur_detector import BlurDetector
 from models.aesthetic_scorer import AestheticScorer
 from models.enhancer import LowLightEnhancer
+from models.lighting_assessor import LightingAssessor
 from utils.image_processing import ImageProcessor
 
 # Initialize Dash app with Bootstrap theme
@@ -30,11 +31,12 @@ app.title = "Image Analyzer"
 blur_detector = None
 aesthetic_scorer = None
 enhancer = None
+lighting_assessor = None
 image_processor = ImageProcessor()
 
 def get_models():
     """Lazy load models on first use"""
-    global blur_detector, aesthetic_scorer, enhancer
+    global blur_detector, aesthetic_scorer, enhancer, lighting_assessor
     
     if blur_detector is None:
         blur_detector = BlurDetector()
@@ -55,7 +57,13 @@ def get_models():
         if weights_path.exists():
             enhancer.load_weights(str(weights_path))
     
-    return blur_detector, aesthetic_scorer, enhancer
+    if lighting_assessor is None:
+        lighting_assessor = LightingAssessor()
+        weights_path = Path('weights/lighting_assessor_best.pth')
+        if weights_path.exists():
+            lighting_assessor.load_weights(str(weights_path))
+    
+    return blur_detector, aesthetic_scorer, enhancer, lighting_assessor
 
 def parse_uploaded_image(contents):
     """Parse uploaded image from base64 string"""
@@ -107,6 +115,7 @@ app.layout = dbc.Container([
             html.H1("Image Analyzer", className="text-center mb-4"),
             html.P("Upload an image to analyze blur, aesthetics, and lighting quality", 
                    className="text-center text-muted mb-4"),
+            html.Div(id='model-status', className="mb-3"),
         ], width=12)
     ]),
     
@@ -168,12 +177,60 @@ app.layout = dbc.Container([
                       color="success", size="lg", className="w-100 mb-4", 
                       disabled=True),
             html.Div(id='enhance-recommendation', className="text-center text-muted small mt-2"),
+            html.Div([
+                html.Label("Max Brightness Limit (0-255):", className="form-label mt-3"),
+                dcc.Slider(
+                    id='brightness-slider',
+                    min=180,
+                    max=255,
+                    step=5,
+                    value=220,
+                    marks={180: '180', 200: '200', 220: '220', 240: '240', 255: '255'},
+                    tooltip={"placement": "bottom", "always_visible": True}
+                ),
+                html.P("Lower values = less bright enhancement", className="text-muted small mt-2"),
+            ], className="mb-3"),
         ], width=12),
     ]),
     
     html.Div(id='enhanced-image-container', className="mt-4"),
     
 ], fluid=True, className="py-4")
+
+@callback(
+    Output('model-status', 'children'),
+    Input('upload-image', 'contents'),
+    prevent_initial_call=False
+)
+def update_model_status(contents):
+    """Display model status (ML vs fallback)"""
+    weights_dir = Path('weights')
+    models_status = []
+    
+    # Check which models have weights
+    has_blur = (weights_dir / 'blur_detector_best.pth').exists()
+    has_aesthetic = (weights_dir / 'aesthetic_scorer_best.pth').exists()
+    has_enhancer = (weights_dir / 'enhancer_best.pth').exists()
+    has_lighting = (weights_dir / 'lighting_assessor_best.pth').exists()
+    
+    ml_count = sum([has_blur, has_aesthetic, has_enhancer, has_lighting])
+    
+    if ml_count == 0:
+        return dbc.Alert([
+            html.Strong("⚠ Using Fallback Methods: "),
+            "No trained model weights found. The system is using classical computer vision methods. ",
+            "To use ML models, train them using the training scripts (see TRAINING_GUIDE.md or QUICK_START.md)."
+        ], color="warning", className="mb-3")
+    elif ml_count < 4:
+        return dbc.Alert([
+            html.Strong("ℹ Partial ML Mode: "),
+            f"{ml_count}/4 models using ML. Some features may use fallback methods."
+        ], color="info", className="mb-3")
+    else:
+        return dbc.Alert([
+            html.Strong("✓ ML Models Active: "),
+            "All models are using trained ML weights."
+        ], color="success", className="mb-3")
 
 @callback(
     Output('upload-status', 'children'),
@@ -224,12 +281,18 @@ def analyze_image(n_clicks, contents):
             return dbc.Alert("Failed to parse image", color="danger"), True, html.P("")
         
         # Get models
-        blur_model, aesthetic_model, enhancer_model = get_models()
+        blur_model, aesthetic_model, enhancer_model, lighting_model = get_models()
         
         # Analyze
         blur_score = blur_model.predict(img)
         aesthetic_scores = aesthetic_model.score(img)
-        needs_enhancement, brightness_score = image_processor.check_lighting(img)
+        
+        # Use ML-based lighting assessment if available, otherwise fallback
+        try:
+            brightness_score, needs_enhancement = lighting_model.assess(img)
+        except Exception as e:
+            # Fallback to classical method if ML model fails
+            needs_enhancement, brightness_score = image_processor.check_lighting(img)
         
         # Create results cards
         results = []
@@ -306,9 +369,10 @@ def analyze_image(n_clicks, contents):
     Output('enhanced-image-container', 'children'),
     Input('enhance-btn', 'n_clicks'),
     State('upload-image', 'contents'),
+    State('brightness-slider', 'value'),
     prevent_initial_call=True
 )
-def enhance_image(n_clicks, contents):
+def enhance_image(n_clicks, contents, max_brightness):
     """Enhance low-light image"""
     if contents is None:
         return ""
@@ -320,10 +384,11 @@ def enhance_image(n_clicks, contents):
             return dbc.Alert("Failed to parse image", color="danger")
         
         # Get enhancer
-        _, _, enhancer_model = get_models()
+        _, _, enhancer_model, _ = get_models()
         
-        # Enhance with color preservation (more natural, less over-saturated)
-        enhanced_img = enhancer_model.enhance(img, preserve_colors=True)
+        # Enhance with color preservation and brightness limiting (prevent over-enhancement)
+        # max_brightness prevents images from becoming too bright (0-255 scale)
+        enhanced_img = enhancer_model.enhance(img, preserve_colors=True, max_brightness=max_brightness)
         
         # Use higher resolution for comparison (1200px max, or original size if smaller)
         # Use PNG format for better quality (lossless)
@@ -365,4 +430,4 @@ if __name__ == '__main__':
     print(f"   http://localhost:8050")
     print(f"\nPress Ctrl+C to stop the server\n")
     print("="*50 + "\n")
-    app.run_server(debug=True, host='127.0.0.1', port=8050)
+    app.run_server(debug=False, host='127.0.0.1', port=8050)
