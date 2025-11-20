@@ -12,10 +12,14 @@ import sys
 import numpy as np
 
 # Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+project_root = Path(__file__).resolve().parent.parent
+scripts_dir = Path(__file__).resolve().parent
+sys.path.insert(0, str(project_root))
+sys.path.insert(0, str(scripts_dir))
 
 from models.lighting_assessor import LightingAssessor
 from data.dataset_utils import LightingDataset, get_transforms
+from generate_lighting_labels import generate_lighting_labels
 
 
 def train_epoch(model_wrapper, dataloader, criterion, optimizer, device):
@@ -102,6 +106,18 @@ def main():
                        help='Directory to save model weights')
     parser.add_argument('--resume', type=str, default=None,
                        help='Path to checkpoint to resume from')
+    parser.add_argument('--auto_generate_csv', action='store_true',
+                       help='Automatically generate lighting labels if CSV is missing.')
+    parser.add_argument('--reference_lol_dir', type=str, default=None,
+                       help='Path to LOL dataset root (uses low/high folders for calibration).')
+    parser.add_argument('--reference_low_dir', type=str, default=None,
+                       help='Path to low-light reference images for calibration.')
+    parser.add_argument('--reference_high_dir', type=str, default=None,
+                       help='Path to well-lit reference images for calibration.')
+    parser.add_argument('--low_target_score', type=float, default=3.0,
+                       help='Desired score for low-light reference images.')
+    parser.add_argument('--high_target_score', type=float, default=7.0,
+                       help='Desired score for well-lit reference images.')
     
     args = parser.parse_args()
     
@@ -117,10 +133,43 @@ def main():
     train_transform = get_transforms(train=True, input_size=224)
     val_transform = get_transforms(train=False, input_size=224)
     
+    csv_path = args.csv_path
+    if args.auto_generate_csv or (csv_path and not Path(csv_path).exists()):
+        if not csv_path:
+            csv_path = Path(args.data_dir) / 'lighting_labels_auto.csv'
+        csv_path = Path(csv_path)
+        csv_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        ref_low = args.reference_low_dir
+        ref_high = args.reference_high_dir
+        
+        if args.reference_lol_dir:
+            lol_root = Path(args.reference_lol_dir)
+            candidate_low = lol_root / 'low'
+            candidate_high = lol_root / 'high'
+            if not candidate_high.exists():
+                candidate_high = lol_root / 'normal'
+            if candidate_low.exists() and not ref_low:
+                ref_low = str(candidate_low)
+            if candidate_high.exists() and not ref_high:
+                ref_high = str(candidate_high)
+        
+        print(f"Auto-generating lighting labels at {csv_path} ...")
+        generate_lighting_labels(
+            image_dir=args.data_dir,
+            output_csv=str(csv_path),
+            reference_low_dir=ref_low,
+            reference_high_dir=ref_high,
+            low_target_score=args.low_target_score,
+            high_target_score=args.high_target_score
+        )
+        args.csv_path = str(csv_path)
+        csv_path = args.csv_path
+    
     train_dataset = LightingDataset(
         args.data_dir,
         transform=train_transform,
-        csv_path=args.csv_path
+        csv_path=csv_path
     )
     train_loader = DataLoader(
         train_dataset,
@@ -134,7 +183,7 @@ def main():
         val_dataset = LightingDataset(
             args.val_dir,
             transform=val_transform,
-            csv_path=args.csv_path
+        csv_path=csv_path
         )
         val_loader = DataLoader(
             val_dataset,

@@ -12,8 +12,8 @@ from tqdm import tqdm
 import sys
 import numpy as np
 
-# Add project root to path
-sys.path.insert(0, str(Path(__file__).parent))
+# Add project root to path (parent directory of scripts/)
+sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from models.enhancer import LowLightEnhancer
 from data.dataset_utils import LowLightDataset, get_enhancer_transforms
