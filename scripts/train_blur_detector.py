@@ -125,6 +125,20 @@ def main():
         is_csv=(csv_path is not None),
         csv_path=csv_path
     )
+    
+    # Validate dataset is not empty
+    if len(train_dataset) == 0:
+        print(f"\n❌ ERROR: No training images found in '{args.data_dir}'")
+        print("\nExpected directory structure:")
+        print("  data_dir/")
+        print("    sharp/")
+        print("      *.jpg or *.png")
+        print("    blurry/")
+        print("      *.jpg or *.png")
+        print("\nOr provide a CSV file with columns: path, label")
+        print("  (label: 0 for blurry, 1 for sharp)")
+        sys.exit(1)
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,
@@ -140,13 +154,17 @@ def main():
             is_csv=(csv_path is not None),
             csv_path=csv_path
         )
-        val_loader = DataLoader(
-            val_dataset,
-            batch_size=args.batch_size,
-            shuffle=False,
-            num_workers=4,
-            pin_memory=True
-        )
+        if len(val_dataset) == 0:
+            print(f"⚠ Warning: No validation images found in '{args.val_dir}'. Skipping validation.")
+            val_loader = None
+        else:
+            val_loader = DataLoader(
+                val_dataset,
+                batch_size=args.batch_size,
+                shuffle=False,
+                num_workers=4,
+                pin_memory=True
+            )
     else:
         val_loader = None
     

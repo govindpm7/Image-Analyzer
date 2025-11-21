@@ -20,11 +20,17 @@ class UNet(nn.Module):
         self.enc3 = self.conv_block(128, 256)
         self.enc4 = self.conv_block(256, 512)
         
-        # Decoder
-        self.dec4 = self.conv_block(512, 256)
-        self.dec3 = self.conv_block(256, 128)
-        self.dec2 = self.conv_block(128, 64)
+        # Decoder (input channels match skip connection after reduction)
+        # After reducing upsampled features to match skip connections, decoder takes combined features
+        self.dec4 = self.conv_block(256, 256)  # 256 (reduced) + 256 (skip) -> 256 after addition
+        self.dec3 = self.conv_block(128, 128)  # 128 (reduced) + 128 (skip) -> 128 after addition
+        self.dec2 = self.conv_block(64, 64)    # 64 (reduced) + 64 (skip) -> 64 after addition
         self.dec1 = nn.Conv2d(64, 3, kernel_size=1)
+        
+        # Channel reduction layers for skip connections (to match channel dimensions)
+        self.reduce4 = nn.Conv2d(512, 256, kernel_size=1)
+        self.reduce3 = nn.Conv2d(256, 128, kernel_size=1)
+        self.reduce2 = nn.Conv2d(128, 64, kernel_size=1)
         
         self.pool = nn.MaxPool2d(2)
         self.upsample = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
@@ -48,29 +54,35 @@ class UNet(nn.Module):
         
         # Decoder with skip connections (crop to match dimensions)
         up4 = self.upsample(e4)
-        # Crop upsampled tensor to match e3 dimensions
+        # Crop upsampled tensor to match e3 spatial dimensions
         _, _, h3, w3 = e3.size()
         _, _, h_up, w_up = up4.size()
         up4_cropped = up4[:, :, :h3, :w3] if h_up >= h3 and w_up >= w3 else up4
-        if up4_cropped.size() != e3.size():
+        if up4_cropped.size()[2:] != e3.size()[2:]:
             up4_cropped = nn.functional.interpolate(up4_cropped, size=(h3, w3), mode='bilinear', align_corners=True)
-        d4 = self.dec4(up4_cropped + e3)
+        # Reduce channels from 512 to 256 to match e3 before addition
+        up4_reduced = self.reduce4(up4_cropped)
+        d4 = self.dec4(up4_reduced + e3)
         
         up3 = self.upsample(d4)
         _, _, h2, w2 = e2.size()
         _, _, h_up, w_up = up3.size()
         up3_cropped = up3[:, :, :h2, :w2] if h_up >= h2 and w_up >= w2 else up3
-        if up3_cropped.size() != e2.size():
+        if up3_cropped.size()[2:] != e2.size()[2:]:
             up3_cropped = nn.functional.interpolate(up3_cropped, size=(h2, w2), mode='bilinear', align_corners=True)
-        d3 = self.dec3(up3_cropped + e2)
+        # Reduce channels from 256 to 128 to match e2 before addition
+        up3_reduced = self.reduce3(up3_cropped)
+        d3 = self.dec3(up3_reduced + e2)
         
         up2 = self.upsample(d3)
         _, _, h1, w1 = e1.size()
         _, _, h_up, w_up = up2.size()
         up2_cropped = up2[:, :, :h1, :w1] if h_up >= h1 and w_up >= w1 else up2
-        if up2_cropped.size() != e1.size():
+        if up2_cropped.size()[2:] != e1.size()[2:]:
             up2_cropped = nn.functional.interpolate(up2_cropped, size=(h1, w1), mode='bilinear', align_corners=True)
-        d2 = self.dec2(up2_cropped + e1)
+        # Reduce channels from 128 to 64 to match e1 before addition
+        up2_reduced = self.reduce2(up2_cropped)
+        d2 = self.dec2(up2_reduced + e1)
         
         d1 = self.dec1(d2)
         

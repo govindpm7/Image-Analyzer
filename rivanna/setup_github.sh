@@ -113,14 +113,95 @@ echo "Pull Latest Changes"
 echo "=========================================="
 cd ~/Image-Analyzer
 git fetch origin
-git pull origin main 2>/dev/null || git pull origin master 2>/dev/null || echo "⚠ Could not pull. Check branch name."
+
+# Check for local changes before pulling
+if ! git diff-index --quiet HEAD -- 2>/dev/null; then
+    echo "⚠ Local changes detected in the following files:"
+    git diff --name-only HEAD
+    echo ""
+    echo "Options:"
+    echo "  1) Stash changes, pull, then reapply (recommended)"
+    echo "  2) Discard local changes and pull"
+    echo "  3) Skip pull (you can commit/stash manually later)"
+    echo ""
+    read -p "Choose option (1-3, default: 1): " pull_choice
+    pull_choice=${pull_choice:-1}
+    
+    case $pull_choice in
+        1)
+            echo "Stashing local changes..."
+            STASH_MSG="Stashed before pull on $(date '+%Y-%m-%d %H:%M:%S')"
+            git stash push -m "$STASH_MSG"
+            echo "✓ Changes stashed"
+            STASHED=true
+            ;;
+        2)
+            read -p "Are you sure you want to discard ALL local changes? (yes/no): " confirm
+            if [[ $confirm == "yes" ]]; then
+                echo "Discarding local changes..."
+                git reset --hard HEAD
+                git clean -fd
+                echo "✓ Local changes discarded"
+                STASHED=false
+            else
+                echo "Cancelled. Skipping pull."
+                STASHED=false
+                skip_pull=true
+            fi
+            ;;
+        3)
+            echo "Skipping pull. You can handle changes manually."
+            skip_pull=true
+            STASHED=false
+            ;;
+        *)
+            echo "Invalid option. Stashing changes..."
+            git stash push -m "Stashed before pull on $(date '+%Y-%m-%d %H:%M:%S')"
+            STASHED=true
+            ;;
+    esac
+else
+    STASHED=false
+    skip_pull=false
+fi
+
+# Try to pull if not skipped
+if [ "$skip_pull" != "true" ]; then
+    if git pull origin main 2>/dev/null || git pull origin master 2>/dev/null; then
+        echo "✓ Successfully pulled latest changes"
+        
+        # If we stashed changes, try to reapply them
+        if [ "$STASHED" = "true" ]; then
+            echo "Attempting to reapply stashed changes..."
+            if git stash pop 2>/dev/null; then
+                echo "✓ Stashed changes reapplied successfully"
+            else
+                echo "⚠ Conflicts detected when reapplying stashed changes"
+                echo "   Your stashed changes are still available. To resolve:"
+                echo "   1. Fix conflicts in the files"
+                echo "   2. Run: git stash drop  (after resolving)"
+                echo "   Or keep stashed: git stash apply"
+            fi
+        fi
+    else
+        echo "⚠ Could not pull. Check branch name or network connection."
+        if [ "$STASHED" = "true" ]; then
+            echo "   Your changes are safely stashed. Restore with: git stash pop"
+        fi
+    fi
+fi
 
 echo ""
 echo "=========================================="
 echo "Setup Complete!"
 echo "=========================================="
 echo ""
-echo "To update files in the future, run:"
+echo "To update files in the future:"
 echo "  cd ~/Image-Analyzer && git pull origin main"
+echo ""
+echo "To avoid 'local changes would be overwritten' errors:"
+echo "  1. Always commit or stash changes before pulling"
+echo "  2. Or use: git stash && git pull && git stash pop"
+echo "  3. Or discard changes: git reset --hard HEAD && git pull"
 echo ""
 
