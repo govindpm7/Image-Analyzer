@@ -167,7 +167,7 @@ def main():
     criterion = nn.L1Loss()
     optimizer = optim.Adam(model.model.parameters(), lr=args.lr)
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(
-        optimizer, mode='max', factor=0.5, patience=10, verbose=True
+        optimizer, mode='max', factor=0.5, patience=10
     )
     
     # Training loop

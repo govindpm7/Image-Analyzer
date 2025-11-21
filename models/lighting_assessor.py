@@ -24,7 +24,13 @@ class LightingAssessor:
         
     def _build_model(self):
         """Build MobileNet-V2 based lighting assessor"""
-        model = models.mobilenet_v2(pretrained=True)
+        try:
+            # Try new weights API (torchvision >= 0.13)
+            from torchvision.models import MobileNet_V2_Weights
+            model = models.mobilenet_v2(weights=MobileNet_V2_Weights.IMAGENET1K_V1)
+        except (ImportError, AttributeError):
+            # Fallback to old pretrained API
+            model = models.mobilenet_v2(pretrained=True)
         
         # Replace classifier for regression (brightness score 0-10)
         model.classifier = nn.Sequential(

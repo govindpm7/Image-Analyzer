@@ -24,7 +24,13 @@ class BlurDetector:
         
     def _build_model(self):
         """Build ResNet-18 based blur detector"""
-        model = models.resnet18(pretrained=True)
+        try:
+            # Try new weights API (torchvision >= 0.13)
+            from torchvision.models import ResNet18_Weights
+            model = models.resnet18(weights=ResNet18_Weights.IMAGENET1K_V1)
+        except (ImportError, AttributeError):
+            # Fallback to old pretrained API
+            model = models.resnet18(pretrained=True)
         # Replace final layer for binary classification
         model.fc = nn.Linear(512, 2)  # Sharp vs Blurry
         model = model.to(self.device)

@@ -24,7 +24,13 @@ class AestheticScorer:
         
     def _build_model(self):
         """Build EfficientNet-B0 based aesthetic scorer"""
-        model = models.efficientnet_b0(pretrained=True)
+        try:
+            # Try new weights API (torchvision >= 0.13)
+            from torchvision.models import EfficientNet_B0_Weights
+            model = models.efficientnet_b0(weights=EfficientNet_B0_Weights.IMAGENET1K_V1)
+        except (ImportError, AttributeError):
+            # Fallback to old pretrained API
+            model = models.efficientnet_b0(pretrained=True)
         
         # Multi-task output
         model.classifier = nn.Sequential(
