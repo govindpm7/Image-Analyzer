@@ -10,44 +10,79 @@
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu
 
-# Print job information
 echo "Job ID: $SLURM_JOB_ID"
-echo "Job Name: $SLURM_JOB_NAME"
-echo "Node: $SLURM_NODELIST"
 echo "Start Time: $(date)"
 echo "Working Directory: $(pwd)"
 
-# Load modules (adjust based on Rivanna's available modules)
+# Load modules
 module purge
 module load miniforge/24.3.0-py3.11
 
-# Initialize conda for bash and activate environment
+# Initialize conda
 eval "$(conda shell.bash hook)"
-conda activate image-analyzer
 
-# Verify environment
+# Activate environment - use source activate for better SLURM compatibility
+source activate image-analyzer
+
+# Verify environment activation
+if [[ "$CONDA_DEFAULT_ENV" != "image-analyzer" ]]; then
+    echo "ERROR: Failed to activate image-analyzer environment!"
+    echo "CONDA_DEFAULT_ENV: $CONDA_DEFAULT_ENV"
+    echo "Trying alternative activation method..."
+    conda activate image-analyzer
+fi
+
+# Verify environment and packages
+echo "=========================================="
+echo "Environment Verification:"
+echo "=========================================="
+echo "Conda environment: $CONDA_DEFAULT_ENV"
 echo "Python: $(which python)"
 echo "Python version: $(python --version)"
-python -c "import torch; print(f'PyTorch: {torch.__version__}')"
+echo "Python path: $(python -c 'import sys; print(sys.executable)')"
+echo ""
+echo "Testing critical packages..."
+python -c "import torch; print(f'✓ PyTorch: {torch.__version__}')" || echo "✗ PyTorch import failed!"
+python -c "import tqdm; print(f'✓ tqdm: {tqdm.__version__}')" || echo "✗ tqdm import failed!"
+python -c "import cv2; print(f'✓ OpenCV: {cv2.__version__}')" || echo "✗ OpenCV import failed!"
+python -c "import pandas; print(f'✓ Pandas: {pandas.__version__}')" || echo "✗ Pandas import failed!"
+echo "=========================================="
+echo ""
 
-# Set CUDA device
-export CUDA_VISIBLE_DEVICES=0
+# Navigate to project directory
+cd $SLURM_SUBMIT_DIR/..
 
-# Navigate to project directory (assuming script is in rivanna/ subdirectory)
-cd $SLURM_SUBMIT_DIR
-cd ..
+# Verify we're in the right directory
+echo "Current directory: $(pwd)"
+echo "Project structure check:"
+ls -d scripts/ models/ data/ 2>/dev/null || echo "WARNING: Project structure not found!"
 
-# Create logs directory if it doesn't exist
-mkdir -p logs
-mkdir -p weights
+# Set PYTHONPATH to include project root
+export PYTHONPATH="$(pwd):$PYTHONPATH"
+echo "PYTHONPATH: $PYTHONPATH"
+
+# Create directories
+mkdir -p logs weights
 
 # Run training
-# Dataset should have sharp/ and blurry/ subdirectories, or provide --csv_path
 echo "Starting blur detector training..."
+echo "Note: If CSV file doesn't exist, training will use directory-based loading."
+echo "      Directory mode expects sharp/ and blurry/ subdirectories."
+echo ""
+
+# Check if CSV exists, if not, don't pass it (script will handle gracefully)
+CSV_ARG=""
+if [ -f "data/blur_labels.csv" ]; then
+    CSV_ARG="--csv_path data/blur_labels.csv"
+    echo "✓ Found CSV file, using CSV-based loading"
+else
+    echo "⚠ CSV file not found, using directory-based loading (expects sharp/ and blurry/ subdirectories)"
+fi
+
 python scripts/train_blur_detector.py \
     --data_dir data/training/blur \
     --val_dir data/validation/blur \
-    --csv_path data/blur_labels.csv \
+    $CSV_ARG \
     --batch_size 32 \
     --epochs 50 \
     --lr 0.001 \

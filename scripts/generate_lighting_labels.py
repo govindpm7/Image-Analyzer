@@ -148,19 +148,22 @@ def generate_lighting_labels(
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate lighting/brightness labels for training data'
+        description='Generate lighting/brightness labels for training data',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog='Either --image_dir OR --image_dirs must be provided (not both required).'
     )
     parser.add_argument(
         '--image_dir',
         type=str,
         default=None,
-        help='Directory containing images'
+        help='Single directory containing images (alternative to --image_dirs)'
     )
     parser.add_argument(
         '--image_dirs',
         type=str,
         nargs='+',
-        help='List of directories to combine before labeling'
+        default=None,
+        help='List of directories to combine before labeling (alternative to --image_dir)'
     )
     parser.add_argument('--output_csv', type=str, required=True, help='Path to output CSV file')
     parser.add_argument('--reference_lol_dir', type=str, default=None,
@@ -188,13 +191,20 @@ def main():
         ref_low = ref_low or (str(candidate_low) if candidate_low.exists() else None)
         ref_high = ref_high or (str(candidate_high) if candidate_high.exists() else None)
     
+    # Collect image sources - either --image_dir or --image_dirs (or both)
     image_sources = []
     if args.image_dir:
         image_sources.append(args.image_dir)
     if args.image_dirs:
         image_sources.extend(args.image_dirs)
+    
+    # Validate that at least one source was provided
     if not image_sources:
-        parser.error('Please provide --image_dir or --image_dirs (one or more directories).')
+        parser.error(
+            'ERROR: You must provide either --image_dir OR --image_dirs (or both).\n'
+            '  Example: --image_dirs dir1 dir2 dir3\n'
+            '  Example: --image_dir single_directory'
+        )
 
     generate_lighting_labels(
         image_dirs=image_sources,

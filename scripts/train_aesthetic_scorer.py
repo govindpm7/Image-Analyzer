@@ -117,10 +117,17 @@ def main():
     train_transform = get_transforms(train=True, input_size=224)
     val_transform = get_transforms(train=False, input_size=224)
     
+    # Only use CSV if it exists
+    csv_path = args.csv_path if (args.csv_path and Path(args.csv_path).exists()) else None
+    if args.csv_path and not Path(args.csv_path).exists():
+        print(f"⚠ Warning: CSV file '{args.csv_path}' not found.")
+        print("  Training will use directory-based loading (expects JSON metadata files).")
+        print("  If you need CSV-based training, create the CSV file first.")
+    
     train_dataset = AestheticDataset(
         args.data_dir,
         transform=train_transform,
-        csv_path=args.csv_path
+        csv_path=csv_path
     )
     train_loader = DataLoader(
         train_dataset,
@@ -134,7 +141,7 @@ def main():
         val_dataset = AestheticDataset(
             args.val_dir,
             transform=val_transform,
-            csv_path=args.csv_path
+            csv_path=csv_path
         )
         val_loader = DataLoader(
             val_dataset,
