@@ -3,8 +3,29 @@ Dash Frontend for Image Analyzer
 """
 import sys
 import os
-# Add custom package location for torch (to avoid Windows long path issues)
-sys.path.insert(0, r'C:\py_pkgs')
+from pathlib import Path
+
+# Clean sys.path to ensure we only use packages from the conda environment
+# Remove any problematic custom package paths that might interfere
+problematic_paths = [r'C:\py_pkgs']
+for path in problematic_paths:
+    if path in sys.path:
+        sys.path.remove(path)
+
+# Also check PYTHONPATH environment variable
+if 'PYTHONPATH' in os.environ:
+    pythonpath = os.environ['PYTHONPATH']
+    if r'C:\py_pkgs' in pythonpath:
+        # Remove it from PYTHONPATH
+        paths = pythonpath.split(os.pathsep)
+        paths = [p for p in paths if r'C:\py_pkgs' not in p]
+        os.environ['PYTHONPATH'] = os.pathsep.join(paths)
+
+# Add project root to Python path so we can import models, data, etc.
+# Get the project root (parent of scripts directory)
+project_root = Path(__file__).resolve().parent.parent
+if str(project_root) not in sys.path:
+    sys.path.insert(0, str(project_root))
 
 import base64
 import io
@@ -41,25 +62,25 @@ def get_models():
     if blur_detector is None:
         blur_detector = BlurDetector()
         # Try to load weights if available
-        weights_path = Path('weights/blur_detector_best.pth')
+        weights_path = Path('outputs/weights/blur_detector_best.pth')
         if weights_path.exists():
             blur_detector.load_weights(str(weights_path))
     
     if aesthetic_scorer is None:
         aesthetic_scorer = AestheticScorer()
-        weights_path = Path('weights/aesthetic_scorer_best.pth')
+        weights_path = Path('outputs/weights/aesthetic_scorer_best.pth')
         if weights_path.exists():
             aesthetic_scorer.load_weights(str(weights_path))
     
     if enhancer is None:
         enhancer = LowLightEnhancer()
-        weights_path = Path('weights/enhancer_best.pth')
+        weights_path = Path('outputs/weights/enhancer_best.pth')
         if weights_path.exists():
             enhancer.load_weights(str(weights_path))
     
     if lighting_assessor is None:
         lighting_assessor = LightingAssessor()
-        weights_path = Path('weights/lighting_assessor_best.pth')
+        weights_path = Path('outputs/weights/lighting_assessor_best.pth')
         if weights_path.exists():
             lighting_assessor.load_weights(str(weights_path))
     
@@ -204,7 +225,7 @@ app.layout = dbc.Container([
 )
 def update_model_status(contents):
     """Display model status (ML vs fallback)"""
-    weights_dir = Path('weights')
+    weights_dir = Path('outputs/weights')
     models_status = []
     
     # Check which models have weights

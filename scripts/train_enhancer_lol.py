@@ -119,6 +119,24 @@ def main():
         args.data_dir,
         transform=train_transform
     )
+    
+    # Validate dataset is not empty
+    dataset_size = len(train_dataset)
+    if dataset_size == 0:
+        print(f"\n❌ ERROR: No training image pairs found in '{args.data_dir}'")
+        print("\nExpected directory structure:")
+        print("  data_dir/")
+        print("    low/")
+        print("      *.jpg or *.png (low-light images)")
+        print("    high/")
+        print("      *.jpg or *.png (well-lit images, matching filenames)")
+        print("\nFor LOL dataset, use:")
+        print("  --data_dir data/LOLdataset/our485")
+        print("  --val_dir data/LOLdataset/eval15")
+        sys.exit(1)
+    
+    print(f"✓ Successfully loaded {dataset_size} training image pairs")
+    
     train_loader = DataLoader(
         train_dataset,
         batch_size=args.batch_size,

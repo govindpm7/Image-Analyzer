@@ -52,36 +52,53 @@ class UNet(nn.Module):
         e3 = self.enc3(self.pool(e2))
         e4 = self.enc4(self.pool(e3))
         
-        # Decoder with skip connections (crop to match dimensions)
+        # Decoder with skip connections
+        # Upsample e4 (512 channels) first
         up4 = self.upsample(e4)
-        # Crop upsampled tensor to match e3 spatial dimensions
-        _, _, h3, w3 = e3.size()
-        _, _, h_up, w_up = up4.size()
-        up4_cropped = up4[:, :, :h3, :w3] if h_up >= h3 and w_up >= w3 else up4
-        if up4_cropped.size()[2:] != e3.size()[2:]:
-            up4_cropped = nn.functional.interpolate(up4_cropped, size=(h3, w3), mode='bilinear', align_corners=True)
+        # Match spatial dimensions with e3
+        if up4.size()[2:] != e3.size()[2:]:
+            up4 = nn.functional.interpolate(up4, size=e3.size()[2:], mode='bilinear', align_corners=True)
         # Reduce channels from 512 to 256 to match e3 before addition
-        up4_reduced = self.reduce4(up4_cropped)
+        up4_reduced = self.reduce4(up4)
+        # Verify channel dimensions match before addition
+        if up4_reduced.size(1) != e3.size(1):
+            raise RuntimeError(
+                f"Channel dimension mismatch in decoder: up4_reduced has {up4_reduced.size(1)} channels, "
+                f"but e3 has {e3.size(1)} channels. This indicates a model architecture issue. "
+                f"Expected reduce4 to output 256 channels but got {up4_reduced.size(1)}."
+            )
         d4 = self.dec4(up4_reduced + e3)
         
+        # Upsample d4 (256 channels)
         up3 = self.upsample(d4)
-        _, _, h2, w2 = e2.size()
-        _, _, h_up, w_up = up3.size()
-        up3_cropped = up3[:, :, :h2, :w2] if h_up >= h2 and w_up >= w2 else up3
-        if up3_cropped.size()[2:] != e2.size()[2:]:
-            up3_cropped = nn.functional.interpolate(up3_cropped, size=(h2, w2), mode='bilinear', align_corners=True)
+        # Match spatial dimensions with e2
+        if up3.size()[2:] != e2.size()[2:]:
+            up3 = nn.functional.interpolate(up3, size=e2.size()[2:], mode='bilinear', align_corners=True)
         # Reduce channels from 256 to 128 to match e2 before addition
-        up3_reduced = self.reduce3(up3_cropped)
+        up3_reduced = self.reduce3(up3)
+        # Verify channel dimensions match before addition
+        if up3_reduced.size(1) != e2.size(1):
+            raise RuntimeError(
+                f"Channel dimension mismatch in decoder: up3_reduced has {up3_reduced.size(1)} channels, "
+                f"but e2 has {e2.size(1)} channels. This indicates a model architecture issue. "
+                f"Expected reduce3 to output 128 channels but got {up3_reduced.size(1)}."
+            )
         d3 = self.dec3(up3_reduced + e2)
         
+        # Upsample d3 (128 channels)
         up2 = self.upsample(d3)
-        _, _, h1, w1 = e1.size()
-        _, _, h_up, w_up = up2.size()
-        up2_cropped = up2[:, :, :h1, :w1] if h_up >= h1 and w_up >= w1 else up2
-        if up2_cropped.size()[2:] != e1.size()[2:]:
-            up2_cropped = nn.functional.interpolate(up2_cropped, size=(h1, w1), mode='bilinear', align_corners=True)
+        # Match spatial dimensions with e1
+        if up2.size()[2:] != e1.size()[2:]:
+            up2 = nn.functional.interpolate(up2, size=e1.size()[2:], mode='bilinear', align_corners=True)
         # Reduce channels from 128 to 64 to match e1 before addition
-        up2_reduced = self.reduce2(up2_cropped)
+        up2_reduced = self.reduce2(up2)
+        # Verify channel dimensions match before addition
+        if up2_reduced.size(1) != e1.size(1):
+            raise RuntimeError(
+                f"Channel dimension mismatch in decoder: up2_reduced has {up2_reduced.size(1)} channels, "
+                f"but e1 has {e1.size(1)} channels. This indicates a model architecture issue. "
+                f"Expected reduce2 to output 64 channels but got {up2_reduced.size(1)}."
+            )
         d2 = self.dec2(up2_reduced + e1)
         
         d1 = self.dec1(d2)
@@ -98,7 +115,12 @@ class LowLightEnhancer:
     def load_weights(self, weights_path):
         """Load trained model weights"""
         try:
-            self.model.load_state_dict(torch.load(weights_path, map_location=self.device))
+            checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
+            # Handle both direct state_dict and checkpoint dict formats
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint)
             print(f"✓ Loaded enhancer weights from {weights_path}")
         except FileNotFoundError:
             print(f"⚠ Warning: Weights not found at {weights_path}. Using classical enhancement.")

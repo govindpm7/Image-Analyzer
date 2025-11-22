@@ -119,6 +119,10 @@ def main():
         print(f"⚠ Warning: CSV file '{args.csv_path}' not found.")
         print("  Training will use directory-based loading (expects sharp/ and blurry/ subdirectories).")
     
+    print(f"Loading training dataset from: {args.data_dir}")
+    if csv_path:
+        print(f"  Using CSV file: {csv_path}")
+    
     train_dataset = BlurDataset(
         args.data_dir,
         transform=train_transform,
@@ -126,9 +130,13 @@ def main():
         csv_path=csv_path
     )
     
-    # Validate dataset is not empty
-    if len(train_dataset) == 0:
-        print(f"\n❌ ERROR: No training images found in '{args.data_dir}'")
+    # Validate dataset is not empty BEFORE creating DataLoader
+    dataset_size = len(train_dataset)
+    if dataset_size == 0:
+        print(f"\n❌ ERROR: No training images found!")
+        print(f"   Data directory: {args.data_dir}")
+        if csv_path:
+            print(f"   CSV file: {csv_path}")
         print("\nExpected directory structure:")
         print("  data_dir/")
         print("    sharp/")
@@ -137,7 +145,14 @@ def main():
         print("      *.jpg or *.png")
         print("\nOr provide a CSV file with columns: path, label")
         print("  (label: 0 for blurry, 1 for sharp)")
+        print("\nPlease check:")
+        print(f"  1. Does the directory '{args.data_dir}' exist?")
+        print(f"  2. Are there image files (.jpg or .png) in the subdirectories?")
+        if csv_path:
+            print(f"  3. Does the CSV file '{csv_path}' exist and contain valid paths?")
         sys.exit(1)
+    
+    print(f"✓ Successfully loaded {dataset_size} training samples")
     
     train_loader = DataLoader(
         train_dataset,

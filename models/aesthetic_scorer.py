@@ -46,7 +46,12 @@ class AestheticScorer:
     def load_weights(self, weights_path):
         """Load trained model weights"""
         try:
-            self.model.load_state_dict(torch.load(weights_path, map_location=self.device))
+            checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
+            # Handle both direct state_dict and checkpoint dict formats
+            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
+                self.model.load_state_dict(checkpoint['model_state_dict'])
+            else:
+                self.model.load_state_dict(checkpoint)
             print(f"✓ Loaded aesthetic scorer weights from {weights_path}")
         except FileNotFoundError:
             print(f"⚠ Warning: Weights not found at {weights_path}. Using feature-based scoring.")
