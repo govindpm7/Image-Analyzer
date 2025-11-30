@@ -43,7 +43,13 @@ Thumbs.db
 *.log
 
 # Data
-data/
+# Ignore LOL dataset (zip file and unzipped directory)
+data/LOLdataset.zip
+data/LOLdataset/
+# Ignore CSV files (generated data)
 *.csv
+# Keep README files to show structure
+!data/README.md
+!data/LOLdataset/README.md
 
 
