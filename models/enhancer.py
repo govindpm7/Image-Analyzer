@@ -107,70 +107,138 @@ class UNet(nn.Module):
 
 
 class LowLightEnhancer:
-    def __init__(self, device=None):
+    def __init__(self, device=None, architecture='unet'):
+        """
+        Initialize low-light enhancer
+        
+        Args:
+            device: torch device (cuda/cpu)
+            architecture: 'unet' or 'curve' - which model architecture to use
+        """
         self.device = device if device else torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        self.model = UNet().to(self.device)
+        self.architecture = architecture.lower()
+        
+        # Initialize model based on architecture choice
+        if self.architecture == 'curve':
+            self.model = EnhancementCurveNet().to(self.device)
+        else:
+            self.model = UNet().to(self.device)
+            
         self.model.eval()
+        self.weights_loaded = False  # Track if weights were successfully loaded
+        self.last_method_used = "CV"  # Track which method was used
         
     def load_weights(self, weights_path):
         """Load trained model weights"""
         try:
             checkpoint = torch.load(weights_path, map_location=self.device, weights_only=False)
-            # Handle both direct state_dict and checkpoint dict formats
-            if isinstance(checkpoint, dict) and 'model_state_dict' in checkpoint:
-                self.model.load_state_dict(checkpoint['model_state_dict'])
+            
+            # Check if checkpoint specifies architecture
+            if isinstance(checkpoint, dict):
+                if 'architecture' in checkpoint:
+                    saved_arch = checkpoint['architecture']
+                    if saved_arch != self.architecture:
+                        print(f"⚠ Warning: Checkpoint architecture ({saved_arch}) doesn't match current ({self.architecture})")
+                        print(f"   Reinitializing model with {saved_arch} architecture...")
+                        # Reinitialize with correct architecture
+                        if saved_arch == 'curve':
+                            self.model = EnhancementCurveNet().to(self.device)
+                        else:
+                            self.model = UNet().to(self.device)
+                        self.architecture = saved_arch
+                        self.model.eval()
+                
+                # Handle checkpoint dict format
+                if 'model_state_dict' in checkpoint:
+                    self.model.load_state_dict(checkpoint['model_state_dict'])
+                else:
+                    self.model.load_state_dict(checkpoint)
             else:
+                # Direct state_dict
                 self.model.load_state_dict(checkpoint)
-            print(f"✓ Loaded enhancer weights from {weights_path}")
+                
+            self.weights_loaded = True  # Mark as successfully loaded
+            print(f"✓ Loaded enhancer weights from {weights_path} (architecture: {self.architecture})")
         except FileNotFoundError:
             print(f"⚠ Warning: Weights not found at {weights_path}. Using classical enhancement.")
+            self.weights_loaded = False
         except Exception as e:
             print(f"⚠ Warning: Could not load weights: {e}. Using classical enhancement.")
+            self.weights_loaded = False
     
-    def enhance(self, image, preserve_colors=True, max_brightness=220):
+    def enhance(self, image, preserve_colors=True, max_brightness=220, use_hybrid=False, ml_strength=0.05):
         """
-        Enhance low-light image
+        Enhance low-light image using CV preprocessing + optional ML refinement
         
         Args:
             image: numpy array (BGR format from OpenCV)
             preserve_colors: If True, uses more conservative enhancement to avoid over-saturation
             max_brightness: Maximum average brightness value (0-255) to prevent over-enhancement
+            use_hybrid: If True, uses CV preprocessing + ML refinement (recommended)
+            ml_strength: Strength of ML adjustment (0.0-1.0), lower = more conservative
             
         Returns:
             numpy array: Enhanced image (BGR format)
         """
-        # Since model isn't trained, always use classical enhancement
-        # Check if weights exist - if not, use classical method
-        weights_path = Path('weights/enhancer_best.pth')
-        if not weights_path.exists():
-            enhanced = self._classical_enhancement(image, preserve_colors=preserve_colors)
-        else:
+        # Always start with CV preprocessing for stable base enhancement
+        cv_enhanced = self._classical_enhancement(image, preserve_colors=preserve_colors)
+        method_used = "CV"
+        
+        # Use ML model for minor refinements if weights are loaded and hybrid mode is enabled
+        if self.weights_loaded and use_hybrid:
             try:
-                # Preprocess
+                # Use CV result as input to ML for refinement
                 original_shape = image.shape[:2]
-                img_resized = cv2.resize(image, (256, 256))
-                img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
+                
+                # Use higher resolution to prevent pixelation (512x512 instead of 256x256)
+                # Calculate target size maintaining aspect ratio, max 512px
+                max_dim = max(original_shape)
+                if max_dim > 512:
+                    scale = 512 / max_dim
+                    target_size = (int(original_shape[1] * scale), int(original_shape[0] * scale))
+                else:
+                    target_size = (original_shape[1], original_shape[0])
+                
+                # Resize CV enhanced image to target size
+                cv_resized = cv2.resize(cv_enhanced, target_size, interpolation=cv2.INTER_LINEAR)
+                cv_rgb = cv2.cvtColor(cv_resized, cv2.COLOR_BGR2RGB)
                 
                 # Normalize to [0, 1]
-                img_tensor = torch.from_numpy(img_rgb.astype(np.float32) / 255.0)
-                img_tensor = img_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
+                cv_tensor = torch.from_numpy(cv_rgb.astype(np.float32) / 255.0)
+                cv_tensor = cv_tensor.permute(2, 0, 1).unsqueeze(0).to(self.device)
                 
-                # Enhance
+                # Get ML refinement (treat as residual adjustment)
                 with torch.no_grad():
-                    enhanced = self.model(img_tensor)
-                    enhanced = enhanced.squeeze(0).permute(1, 2, 0).cpu().numpy()
-                    enhanced = (enhanced * 255.0).astype(np.uint8)
+                    ml_output = self.model(cv_tensor)
+                    ml_output = ml_output.squeeze(0).permute(1, 2, 0).cpu().numpy()
+                    ml_output = (ml_output * 255.0).astype(np.float32)
                 
-                # Convert RGB to BGR and resize back
-                enhanced_bgr = cv2.cvtColor(enhanced, cv2.COLOR_RGB2BGR)
-                enhanced_bgr = cv2.resize(enhanced_bgr, (original_shape[1], original_shape[0]))
-                enhanced = enhanced_bgr
+                # Convert CV result to float for blending
+                cv_float = cv_rgb.astype(np.float32)
+                
+                # Blend: CV (base) + ML (refinement) with very low strength
+                # Very low ml_strength (0.05-0.1) = ML makes tiny adjustments, preserving CV quality
+                blended = cv_float * (1.0 - ml_strength) + ml_output * ml_strength
+                blended = np.clip(blended, 0, 255).astype(np.uint8)
+                
+                # Convert RGB to BGR and resize back to original using high-quality interpolation
+                blended_bgr = cv2.cvtColor(blended, cv2.COLOR_RGB2BGR)
+                enhanced = cv2.resize(blended_bgr, (original_shape[1], original_shape[0]), 
+                                     interpolation=cv2.INTER_LANCZOS4)  # High-quality upscaling
+                method_used = "CV+ML"
             except Exception as e:
-                print(f"Error in enhancement: {e}")
-                enhanced = self._classical_enhancement(image, preserve_colors=preserve_colors)
+                print(f"Error in ML refinement: {e}")
+                enhanced = cv_enhanced
+                method_used = "CV"
+        else:
+            enhanced = cv_enhanced
+            method_used = "CV"
         
         # Apply brightness limiting to prevent over-enhancement
         enhanced = self._limit_brightness(enhanced, max_brightness=max_brightness)
+        
+        # Store method used for display
+        self.last_method_used = method_used
         
         return enhanced
     

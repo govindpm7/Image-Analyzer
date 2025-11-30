@@ -73,10 +73,23 @@ def get_models():
             aesthetic_scorer.load_weights(str(weights_path))
     
     if enhancer is None:
-        enhancer = LowLightEnhancer()
-        weights_path = Path('outputs/weights/enhancer_best.pth')
-        if weights_path.exists():
-            enhancer.load_weights(str(weights_path))
+        # Try curve network first (more realistic), fallback to U-Net if weights not found
+        enhancer = None
+        curve_weights = Path('outputs/weights/enhancer_curve_best.pth')
+        unet_weights = Path('outputs/weights/enhancer_best.pth')
+        
+        # Try curve network first
+        if curve_weights.exists():
+            enhancer = LowLightEnhancer(architecture='curve')
+            enhancer.load_weights(str(curve_weights))
+        # Fallback to U-Net if curve weights don't exist
+        elif unet_weights.exists():
+            enhancer = LowLightEnhancer(architecture='unet')
+            enhancer.load_weights(str(unet_weights))
+        else:
+            # No weights found, use curve network by default (better architecture)
+            enhancer = LowLightEnhancer(architecture='curve')
+            print("⚠ No trained weights found. Using CV-only enhancement.")
     
     if lighting_assessor is None:
         lighting_assessor = LightingAssessor()
@@ -211,10 +224,37 @@ app.layout = dbc.Container([
                 ),
                 html.P("Lower values = less bright enhancement", className="text-muted small mt-2"),
             ], className="mb-3"),
+            # Enhancement mode toggle buttons
+            html.Div([
+                html.Label("Enhancement Mode:", className="form-label mt-3 mb-2"),
+                dbc.ButtonGroup([
+                    dbc.Button("CV Only", id="mode-cv-btn", color="primary", outline=False, className="me-2"),
+                    dbc.Button("CV + ML", id="mode-hybrid-btn", color="secondary", outline=True),
+                ], className="w-100 mb-2"),
+                html.Div(id='mode-description', className="text-muted small mt-2"),
+            ], className="mb-3"),
+            # ML strength slider (only shown when CV+ML is selected)
+            html.Div([
+                html.Label("ML Refinement Strength:", className="form-label mt-2 mb-2", id='ml-strength-label'),
+                dcc.Slider(
+                    id='ml-strength-slider',
+                    min=0.01,
+                    max=0.3,
+                    step=0.01,
+                    value=0.05,
+                    marks={0.01: '1%', 0.05: '5%', 0.1: '10%', 0.2: '20%', 0.3: '30%'},
+                    tooltip={"placement": "bottom", "always_visible": True},
+                    disabled=True
+                ),
+                html.P("Higher values = more ML influence (may cause artifacts)", className="text-muted small mt-2", id='ml-strength-help'),
+            ], className="mb-3", id='ml-strength-container', style={'display': 'none'}),
+            # Store for enhancement mode
+            dcc.Store(id='enhancement-mode-store', data=False),  # False = CV only, True = CV+ML
         ], width=12),
     ]),
     
     html.Div(id='enhanced-image-container', className="mt-4"),
+    html.Div(id='enhancement-toast', className="mt-3"),
     
 ], fluid=True, className="py-4")
 
@@ -386,35 +426,134 @@ def analyze_image(n_clicks, contents):
         error_msg = dbc.Alert(f"Error analyzing image: {str(e)}", color="danger")
         return error_msg, True, html.P("")
 
+# Enhancement mode toggle callbacks
+@callback(
+    Output('enhancement-mode-store', 'data'),
+    Input('mode-cv-btn', 'n_clicks'),
+    Input('mode-hybrid-btn', 'n_clicks'),
+    State('enhancement-mode-store', 'data'),
+    prevent_initial_call=False
+)
+def update_enhancement_mode(n_cv, n_hybrid, current_mode):
+    """Update enhancement mode based on button clicks"""
+    ctx = dash.callback_context
+    if not ctx.triggered:
+        return False  # Default to CV only
+    
+    button_id = ctx.triggered[0]['prop_id'].split('.')[0]
+    if button_id == 'mode-cv-btn':
+        return False  # CV only
+    elif button_id == 'mode-hybrid-btn':
+        return True  # CV + ML
+    return current_mode if current_mode is not None else False
+
+@callback(
+    Output('mode-cv-btn', 'color'),
+    Output('mode-cv-btn', 'outline'),
+    Output('mode-hybrid-btn', 'color'),
+    Output('mode-hybrid-btn', 'outline'),
+    Output('mode-description', 'children'),
+    Output('ml-strength-container', 'style'),
+    Output('ml-strength-slider', 'disabled'),
+    Input('enhancement-mode-store', 'data'),
+    prevent_initial_call=False
+)
+def update_mode_buttons(use_hybrid):
+    """Update button styles and description based on selected mode"""
+    if use_hybrid:
+        return (
+            "secondary", True,  # CV button: secondary, outlined
+            "primary", False,   # Hybrid button: primary, filled
+            "CV preprocessing + ML refinement - Experimental",
+            {'display': 'block'},  # Show ML strength slider
+            False  # Enable ML strength slider
+        )
+    else:
+        return (
+            "primary", False,   # CV button: primary, filled
+            "secondary", True,  # Hybrid button: secondary, outlined
+            "Classical CV only (CLAHE + gamma) - Recommended for best quality",
+            {'display': 'none'},  # Hide ML strength slider
+            True  # Disable ML strength slider
+        )
+
 @callback(
     Output('enhanced-image-container', 'children'),
+    Output('enhancement-toast', 'children'),
     Input('enhance-btn', 'n_clicks'),
     State('upload-image', 'contents'),
     State('brightness-slider', 'value'),
+    State('enhancement-mode-store', 'data'),
+    State('ml-strength-slider', 'value'),
     prevent_initial_call=True
 )
-def enhance_image(n_clicks, contents, max_brightness):
+def enhance_image(n_clicks, contents, max_brightness, use_hybrid_mode, ml_strength):
     """Enhance low-light image"""
     if contents is None:
-        return ""
+        return "", ""
     
     try:
         # Parse image
         img = parse_uploaded_image(contents)
         if img is None:
-            return dbc.Alert("Failed to parse image", color="danger")
+            return dbc.Alert("Failed to parse image", color="danger"), ""
         
         # Get enhancer
         _, _, enhancer_model, _ = get_models()
         
+        # Get enhancement mode from store
+        use_hybrid = use_hybrid_mode if use_hybrid_mode is not None else False
+        ml_strength = ml_strength if ml_strength is not None else 0.05
+        
         # Enhance with color preservation and brightness limiting (prevent over-enhancement)
         # max_brightness prevents images from becoming too bright (0-255 scale)
-        enhanced_img = enhancer_model.enhance(img, preserve_colors=True, max_brightness=max_brightness)
+        enhanced_img = enhancer_model.enhance(
+            img, 
+            preserve_colors=True, 
+            max_brightness=max_brightness,
+            use_hybrid=use_hybrid,
+            ml_strength=ml_strength
+        )
         
         # Use higher resolution for comparison (1200px max, or original size if smaller)
         # Use PNG format for better quality (lossless)
         img_base64 = image_to_base64(enhanced_img, format='PNG', max_size=1200)
         original_base64 = image_to_base64(img, format='PNG', max_size=1200)
+        
+        # Get method used from enhancer
+        method_used = getattr(enhancer_model, 'last_method_used', 'CV')
+        
+        # Create toast notification
+        if method_used == "CV+ML":
+            toast = dbc.Toast(
+                f"Enhanced using CV preprocessing + ML refinement ({ml_strength*100:.0f}% ML strength)",
+                header="Enhancement Complete",
+                icon="success",
+                dismissable=True,
+                is_open=True,
+                duration=4000,
+                style={"position": "fixed", "top": 66, "right": 10, "width": 350},
+            )
+        elif method_used == "ML":
+            toast = dbc.Toast(
+                "Enhanced using ML model only",
+                header="Enhancement Complete",
+                icon="success",
+                dismissable=True,
+                is_open=True,
+                duration=4000,
+                style={"position": "fixed", "top": 66, "right": 10, "width": 350},
+            )
+        else:
+            toast = dbc.Toast(
+                "Enhanced using classical CV methods (CLAHE + gamma correction)",
+                header="Enhancement Complete",
+                icon="info",
+                dismissable=True,
+                is_open=True,
+                duration=4000,
+                style={"position": "fixed", "top": 66, "right": 10, "width": 350},
+            )
         
         return dbc.Card([
             dbc.CardBody([
@@ -438,10 +577,11 @@ def enhance_image(n_clicks, contents, max_brightness):
                     ], width=12, md=6),
                 ])
             ])
-        ])
+        ]), toast
         
     except Exception as e:
-        return dbc.Alert(f"Error enhancing image: {str(e)}", color="danger")
+        error_msg = dbc.Alert(f"Error enhancing image: {str(e)}", color="danger")
+        return error_msg, ""
 
 if __name__ == '__main__':
     print("\n" + "="*50)
